@@ -352,7 +352,7 @@ CB:
 
 	// Print transaction id on task executed
 	transIdx := make(chan int64)
-	go func(transIdx chan int64, title string) {
+	go func(transIdx chan int64, title string, ownerId int) {
 		trid := <-transIdx
 		msgText := fmt.Sprintf("Failed to create transaction for %q", title)
 		if trid != -1 {
@@ -360,7 +360,20 @@ CB:
 		}
 		msg := tgbotapi2.NewMessage(chatId, msgText)
 		bot.Send(msg)
-	}(transIdx, title)
+
+		var debt int
+		if err := calcDebt(ownerId, &debt); err != nil {
+			logE.Printf(logPrefix+"calculate debt: ", err)
+			return
+		}
+		if debt >= 0 {
+			msgText = fmt.Sprintf("You owe €%d", debt)
+		} else {
+			msgText = fmt.Sprintf("You are owed €%d", -debt)
+		}
+		msg = tgbotapi2.NewMessage(chatId, msgText)
+		bot.Send(msg)
+	}(transIdx, title, ownerId)
 
 	tasksChan <- &payTask{
 		title:    title,
@@ -376,8 +389,40 @@ func createTables() error {
 	return nil
 }
 
-func calcDebt() {
+func calcDebt(uid int, debt *int) error {
+	logPrefix := "calculate debt: "
+	var rows *sql.Rows
+	rows, err := db.Query(`SELECT SUM(O.amount) FROM operations O
+WHERE O.src=? AND O.dst!=?`, uid, uid)
+	if err != nil {
+		return fmt.Errorf(logPrefix+"select sum of payments: %v", err)
+	}
+	defer rows.Close()
+	var plus int
+	for rows.Next() {
+		err = rows.Scan(&plus)
+		if err != nil {
+			return fmt.Errorf(logPrefix+"scan plus: %v", err)
+		}
+	}
+	logD.Printf(logPrefix+"+%d", plus)
 
+	rows, err = db.Query(`SELECT SUM(O.amount) FROM operations O
+WHERE O.dst=? AND O.src!=?`, uid, uid)
+	if err != nil {
+		return fmt.Errorf(logPrefix+"select sum of debts: %v", err)
+	}
+	var minus int
+	for rows.Next() {
+		err = rows.Scan(&minus)
+		if err != nil {
+			return fmt.Errorf(logPrefix+"scan minus: %v", err)
+		}
+	}
+	logD.Printf(logPrefix+"-%d", minus)
+
+	*debt = minus - plus
+	return nil
 }
 
 //func askForCurrency() {
