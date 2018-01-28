@@ -152,7 +152,7 @@ func processUpdate(
 					}
 					go ipayHandler(&update, api, clientChan, allowedUsers, tasksChan)
 				case "iowe":
-					logI.Println("handle /iowe")
+					go ioweHandler(&update, api)
 				default:
 					logI.Printf("unknown command: %q", update.Message.Text[1:])
 					handleNotAllowed(update, api)
@@ -363,14 +363,10 @@ CB:
 
 		var debt int
 		if err := calcDebt(ownerId, &debt); err != nil {
-			logE.Printf(logPrefix+"calculate debt: ", err)
+			logE.Printf(logPrefix+"calculate debt: %v", err)
 			return
 		}
-		if debt >= 0 {
-			msgText = fmt.Sprintf("You owe €%d", debt)
-		} else {
-			msgText = fmt.Sprintf("You are owed €%d", -debt)
-		}
+		msgText = debtMessage(debt)
 		msg = tgbotapi2.NewMessage(chatId, msgText)
 		bot.Send(msg)
 	}(transIdx, title, ownerId)
@@ -383,6 +379,31 @@ CB:
 		members:  getSelectedUsersIndices(),
 		transIdx: transIdx,
 	}
+}
+
+func debtMessage(debt int) string {
+	if debt == 0 {
+		return "You owe nothing"
+	} else if debt > 0 {
+		return fmt.Sprintf("You owe €%d", debt)
+	} else {
+		return fmt.Sprintf("You are owed €%d", -debt)
+	}
+}
+
+func ioweHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI) {
+	logPrefix := "iowe handler: "
+
+	requestorId := update.Message.From.ID
+	chatId := update.Message.Chat.ID
+
+	var debt int
+	if err := calcDebt(requestorId, &debt); err != nil {
+		logE.Printf(logPrefix+"calculate debt: %v", err)
+		return
+	}
+	msg := tgbotapi2.NewMessage(chatId, debtMessage(debt))
+	bot.Send(msg)
 }
 
 func createTables() error {
