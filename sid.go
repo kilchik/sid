@@ -199,63 +199,26 @@ func startHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI) {
 
 func retrieveAmount(chatId int64, replyTo int, action string, bot *tgbotapi2.BotAPI, replyChan <-chan reply) (amount int, replyMsgId int) {
 	// Ask for price
-	digitsKeyboard := tgbotapi2.NewInlineKeyboardMarkup(
-		tgbotapi2.NewInlineKeyboardRow(
-			tgbotapi2.NewInlineKeyboardButtonData("1", "1"),
-			tgbotapi2.NewInlineKeyboardButtonData("2", "2"),
-			tgbotapi2.NewInlineKeyboardButtonData("3", "3"),
-		),
-		tgbotapi2.NewInlineKeyboardRow(
-			tgbotapi2.NewInlineKeyboardButtonData("4", "4"),
-			tgbotapi2.NewInlineKeyboardButtonData("5", "5"),
-			tgbotapi2.NewInlineKeyboardButtonData("6", "6"),
-		),
-		tgbotapi2.NewInlineKeyboardRow(
-			tgbotapi2.NewInlineKeyboardButtonData("7", "7"),
-			tgbotapi2.NewInlineKeyboardButtonData("8", "8"),
-			tgbotapi2.NewInlineKeyboardButtonData("9", "9"),
-		),
-		tgbotapi2.NewInlineKeyboardRow(
-			tgbotapi2.NewInlineKeyboardButtonData("⌫", "⌫"),
-			tgbotapi2.NewInlineKeyboardButtonData("0", "0"),
-			tgbotapi2.NewInlineKeyboardButtonData("⏎", "⏎"),
-		),
-	)
-
 	msg := tgbotapi2.NewMessage(chatId, fmt.Sprintf("How much € did you %s?", action))
-	msg.ReplyMarkup = digitsKeyboard
 	msg.ReplyToMessageID = replyTo
 
 	bot.Send(msg)
 
 	// Parse price
-	amountStr := ""
-
-	var r reply
-CB:
-	for r = range replyChan {
-		switch r.cb.Data {
-		case "⏎":
-			break CB
-		case "⌫":
-			amountStr = amountStr[:len(amountStr)-1]
-		default:
-			amountStr = amountStr + r.cb.Data
-		}
-		logD.Println("amount: ", amountStr)
-		alertUpdateAmount := tgbotapi2.NewCallbackWithAlert(r.cb.ID, amountStr)
-		alertUpdateAmount.ShowAlert = false
-		bot.AnswerCallbackQuery(alertUpdateAmount)
-	}
-	amount, err := strconv.Atoi(amountStr)
+	r := <-replyChan
+	log.Printf("got amount text: %q", r.msg.Text)
+	amount, err := strconv.Atoi(r.msg.Text)
+	log.Printf("parsed: %d", amount)
 	if err != nil {
+		logE.Printf("parse amount from msg %q: %v", r.msg.Text, err)
 		amount = -1
 		return
 	}
-	alertFinalAmount := tgbotapi2.NewCallbackWithAlert(r.cb.ID, fmt.Sprintf("You %s €"+amountStr, action))
-	alertFinalAmount.ShowAlert = false
-	bot.AnswerCallbackQuery(alertFinalAmount)
-	replyMsgId = r.cb.Message.MessageID
+
+	//alertFinalAmount := tgbotapi2.NewCallbackWithAlert(r.cb.ID, fmt.Sprintf("You %s €"+amountStr, action))
+	//alertFinalAmount.ShowAlert = false
+	//bot.AnswerCallbackQuery(alertFinalAmount)
+	replyMsgId = r.msg.MessageID
 	return
 }
 
@@ -300,11 +263,10 @@ func ipayHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, replyChan <-ch
 		return tgbotapi2.NewInlineKeyboardMarkup(userButtons...)
 	}
 
-	msgEditWho := tgbotapi2.NewEditMessageText(chatId, rplMsgId, "Who did you pay for?")
-	bot.Send(msgEditWho)
-
-	msgEditUsersKb := tgbotapi2.NewEditMessageReplyMarkup(chatId, rplMsgId, composeUsersKb(map[string]bool{}))
-	bot.Send(msgEditUsersKb)
+	msgWho := tgbotapi2.NewMessage(chatId, fmt.Sprintf("Who did you pay for?"))
+	msgWho.ReplyToMessageID = rplMsgId
+	msgWho.ReplyMarkup = composeUsersKb(map[string]bool{})
+	bot.Send(msgWho)
 
 	selected := make(map[string]bool)
 	var transTime time.Time
@@ -329,10 +291,10 @@ func ipayHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, replyChan <-ch
 			break
 		}
 
-		msgEditWho = tgbotapi2.NewEditMessageText(chatId, r.cb.Message.MessageID, "Who else did you pay for?")
+		msgEditWho := tgbotapi2.NewEditMessageText(chatId, r.cb.Message.MessageID, "Who else did you pay for?")
 		bot.Send(msgEditWho)
 
-		msgEditUsersKb = tgbotapi2.NewEditMessageReplyMarkup(chatId, r.cb.Message.MessageID, composeUsersKb(selected))
+		msgEditUsersKb := tgbotapi2.NewEditMessageReplyMarkup(chatId, r.cb.Message.MessageID, composeUsersKb(selected))
 		bot.Send(msgEditUsersKb)
 	}
 
@@ -433,13 +395,20 @@ func igiveHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, replyChan <-c
 	//selected := make(map[string]bool)
 	r := <-replyChan
 
-	selected, err := strconv.Atoi(r.cb.ID)
+	selected, err := strconv.Atoi(r.cb.Data)
 	if err != nil {
 		logI.Printf(logPrefix+"selected: %d", selected)
 		return
 	}
 
-	alertUpdateAmount := tgbotapi2.NewCallbackWithAlert(allowedUsers[int64(selected)], allowedUsers[int64(selected)])
+	msgEditSummary := tgbotapi2.NewEditMessageText(chatId, r.cb.Message.MessageID, "Okay, I got it.")
+	bot.Send(msgEditSummary)
+
+	selectedName, _ := allowedUsers[int64(selected)]
+	msgSummary := tgbotapi2.NewMessage(chatId, fmt.Sprintf("You gave back €%d to %s", amount, selectedName))
+	bot.Send(msgSummary)
+
+	alertUpdateAmount := tgbotapi2.NewCallbackWithAlert(selectedName, selectedName)
 	alertUpdateAmount.ShowAlert = false
 	bot.AnswerCallbackQuery(alertUpdateAmount)
 
