@@ -64,3 +64,30 @@ func (pt *payTask) Exec() {
 
 	pt.transIdx <- trid
 }
+
+type giveTask struct {
+	amount    int
+	src       int
+	dst       int
+	succeeded chan bool
+}
+
+func (gt *giveTask) Exec() {
+	log.Println(gt)
+	logPrefix := "exec give task: "
+
+	stmt, err := db.Prepare(`INSERT INTO operations VALUES (NULL, ?, ?, ?, NULL);`)
+	if err != nil {
+		logE.Printf(logPrefix+"prepare insert operations query: %v", err)
+		gt.succeeded <- false
+		return
+	}
+
+	if _, err := stmt.Exec(gt.src, gt.dst, gt.amount); err != nil {
+		logE.Printf(logPrefix+"exec insert new transaction query: %v", err)
+		gt.succeeded <- false
+		return
+	}
+
+	gt.succeeded <- true
+}

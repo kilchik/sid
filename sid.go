@@ -21,6 +21,7 @@ import (
 // commands list:
 //ipay - create new transaction
 //iowe - find out how much you need to give back
+//igive - give back a debt
 
 var (
 	logD *log.Logger
@@ -151,6 +152,12 @@ func processUpdate(
 						logE.Fatalf("no channel with user though started")
 					}
 					go ipayHandler(&update, api, clientChan, allowedUsers, tasksChan)
+				case "igive":
+					clientChan, ok := clients[update.Message.From.ID]
+					if !ok {
+						logE.Fatalf("no channel with user though started")
+					}
+					go igiveHandler(&update, api, clientChan, allowedUsers, tasksChan)
 				case "iowe":
 					go ioweHandler(&update, api)
 				default:
@@ -190,26 +197,7 @@ func startHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI) {
 	bot.Send(msg)
 }
 
-func ipayHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, replyChan <-chan reply, allowedUsers map[int64]string, tasksChan chan<- task) {
-	logPrefix := "ipay handler: "
-
-	ownerId := update.Message.From.ID
-	chatId := update.Message.Chat.ID
-	var r reply
-
-	// Ask for title
-	msgTitleDemand := tgbotapi2.NewMessage(chatId, "What did you pay for?")
-	bot.Send(msgTitleDemand)
-
-	//msg = tgbotapi2.NewMessage(chatId, "What did you pay for?")
-	//msg.ReplyMarkup = tgbotapi.ReplyKeyboardRemove{true, false}
-	//bot.Send(msg)
-
-	// Parse title
-	r = <-replyChan
-	title := r.msg.Text
-	logD.Println("title: ", title)
-
+func retrieveAmount(chatId int64, replyTo int, action string, bot *tgbotapi2.BotAPI, replyChan <-chan reply) (amount int, replyMsgId int) {
 	// Ask for price
 	digitsKeyboard := tgbotapi2.NewInlineKeyboardMarkup(
 		tgbotapi2.NewInlineKeyboardRow(
@@ -234,15 +222,16 @@ func ipayHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, replyChan <-ch
 		),
 	)
 
-	msg := tgbotapi2.NewMessage(chatId, "How much € did you pay?")
+	msg := tgbotapi2.NewMessage(chatId, fmt.Sprintf("How much € did you %s?", action))
 	msg.ReplyMarkup = digitsKeyboard
-	msg.ReplyToMessageID = r.msg.MessageID
+	msg.ReplyToMessageID = replyTo
 
 	bot.Send(msg)
 
 	// Parse price
 	amountStr := ""
 
+	var r reply
 CB:
 	for r = range replyChan {
 		switch r.cb.Data {
@@ -260,11 +249,41 @@ CB:
 	}
 	amount, err := strconv.Atoi(amountStr)
 	if err != nil {
-		log.Fatalf(logPrefix+"convert amount string to integer: %v", err)
+		amount = -1
+		return
 	}
-	alertFinalAmount := tgbotapi2.NewCallbackWithAlert(r.cb.ID, "You paid €"+amountStr)
+	alertFinalAmount := tgbotapi2.NewCallbackWithAlert(r.cb.ID, fmt.Sprintf("You %s €"+amountStr, action))
 	alertFinalAmount.ShowAlert = false
 	bot.AnswerCallbackQuery(alertFinalAmount)
+	replyMsgId = r.cb.Message.MessageID
+	return
+}
+
+func ipayHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, replyChan <-chan reply, allowedUsers map[int64]string, tasksChan chan<- task) {
+	logPrefix := "ipay handler: "
+
+	ownerId := update.Message.From.ID
+	chatId := update.Message.Chat.ID
+	var r reply
+
+	// Ask for title
+	msgTitleDemand := tgbotapi2.NewMessage(chatId, "What did you pay for?")
+	bot.Send(msgTitleDemand)
+
+	//msg = tgbotapi2.NewMessage(chatId, "What did you pay for?")
+	//msg.ReplyMarkup = tgbotapi.ReplyKeyboardRemove{true, false}
+	//bot.Send(msg)
+
+	// Parse title
+	r = <-replyChan
+	title := r.msg.Text
+	logD.Println("title: ", title)
+
+	amount, rplMsgId := retrieveAmount(chatId, r.msg.MessageID, "pay", bot, replyChan)
+	if amount <= 0 {
+		logI.Printf(logPrefix+"entered amount: %d", amount)
+		return
+	}
 
 	// Ask for members
 	composeUsersKb := func(except map[string]bool) tgbotapi2.InlineKeyboardMarkup {
@@ -281,10 +300,10 @@ CB:
 		return tgbotapi2.NewInlineKeyboardMarkup(userButtons...)
 	}
 
-	msgEditWho := tgbotapi2.NewEditMessageText(chatId, r.cb.Message.MessageID, "Who did you pay for?")
+	msgEditWho := tgbotapi2.NewEditMessageText(chatId, rplMsgId, "Who did you pay for?")
 	bot.Send(msgEditWho)
 
-	msgEditUsersKb := tgbotapi2.NewEditMessageReplyMarkup(chatId, r.cb.Message.MessageID, composeUsersKb(map[string]bool{}))
+	msgEditUsersKb := tgbotapi2.NewEditMessageReplyMarkup(chatId, rplMsgId, composeUsersKb(map[string]bool{}))
 	bot.Send(msgEditUsersKb)
 
 	selected := make(map[string]bool)
@@ -378,6 +397,77 @@ CB:
 		owner:    ownerId,
 		members:  getSelectedUsersIndices(),
 		transIdx: transIdx,
+	}
+}
+
+func igiveHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, replyChan <-chan reply, allowedUsers map[int64]string, tasksChan chan<- task) {
+	logPrefix := "igive handler: "
+
+	srcId := update.Message.From.ID
+
+	// Retrieve the amount
+	chatId := update.Message.Chat.ID
+	amount, rplMsgId := retrieveAmount(chatId, update.Message.MessageID, "give back", bot, replyChan)
+	if amount <= 0 {
+		logI.Printf(logPrefix+"entered amount: %d", amount)
+		return
+	}
+
+	// Ask for dst
+	composeUsersKb := func() tgbotapi2.InlineKeyboardMarkup {
+		var userButtons [][]tgbotapi2.InlineKeyboardButton
+		for id, name := range allowedUsers {
+			if name == allowedUsers[int64(srcId)] {
+				continue
+			}
+			userButtons = append(userButtons, []tgbotapi2.InlineKeyboardButton{tgbotapi2.NewInlineKeyboardButtonData(name, strconv.Itoa(int(id)))})
+		}
+		return tgbotapi2.NewInlineKeyboardMarkup(userButtons...)
+	}
+
+	msgWho := tgbotapi2.NewMessage(chatId, fmt.Sprintf("Who did you give money back?"))
+	msgWho.ReplyMarkup = composeUsersKb()
+	msgWho.ReplyToMessageID = rplMsgId
+	bot.Send(msgWho)
+
+	//selected := make(map[string]bool)
+	r := <-replyChan
+
+	selected, err := strconv.Atoi(r.cb.ID)
+	if err != nil {
+		logI.Printf(logPrefix+"selected: %d", selected)
+		return
+	}
+
+	alertUpdateAmount := tgbotapi2.NewCallbackWithAlert(allowedUsers[int64(selected)], allowedUsers[int64(selected)])
+	alertUpdateAmount.ShowAlert = false
+	bot.AnswerCallbackQuery(alertUpdateAmount)
+
+	succeeded := make(chan bool)
+	go func(succeeded chan bool, ownerId int) {
+		taskSucceeded := <-succeeded
+		if !taskSucceeded {
+			msgText := "Failed to register operation"
+			msg := tgbotapi2.NewMessage(chatId, msgText)
+			bot.Send(msg)
+			return
+		}
+
+		var debt int
+		if err := calcDebt(ownerId, &debt); err != nil {
+			logE.Printf(logPrefix+"calculate debt: %v", err)
+			return
+		}
+		msgText := debtMessage(debt)
+		msg := tgbotapi2.NewMessage(chatId, msgText)
+		bot.Send(msg)
+	}(succeeded, srcId)
+
+	tasksChan <- &giveTask{
+		amount:    amount,
+		src:       srcId,
+		dst:       selected,
+		succeeded: succeeded,
 	}
 }
 
