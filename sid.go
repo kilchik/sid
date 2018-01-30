@@ -162,6 +162,8 @@ func processUpdate(
 					go igiveHandler(&update, api, clientChan, allowedUsers, tasksChan)
 				case "iowe":
 					go ioweHandler(&update, api)
+				case "abort":
+					clients[update.Message.From.ID] <- reply{nil, update.Message}
 				default:
 					if strings.HasPrefix(update.Message.Text[1:], "undo") {
 						clientChan, ok := clients[update.Message.From.ID]
@@ -251,14 +253,18 @@ func startHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI) {
 
 func retrieveAmount(chatId int64, replyTo int, action string, bot *tgbotapi2.BotAPI, replyChan <-chan reply) (amount int, replyMsgId int) {
 	// Ask for price
-	msg := tgbotapi2.NewMessage(chatId, fmt.Sprintf("How much € did you %s?", action))
+	msg := newAbortableMsg(chatId, fmt.Sprintf("How much € did you %s?", action))
 	msg.ReplyToMessageID = replyTo
 
 	bot.Send(msg)
 
 	// Parse price
 	r := <-replyChan
-	log.Printf("got amount text: %q", r.msg.Text)
+	if isAbort(r) {
+		bot.Send(tgbotapi2.NewMessage(chatId, "Aborted."))
+		amount = -1
+		return
+	}
 	amount, err := strconv.Atoi(r.msg.Text)
 	log.Printf("parsed: %d", amount)
 	if err != nil {
@@ -274,6 +280,14 @@ func retrieveAmount(chatId int64, replyTo int, action string, bot *tgbotapi2.Bot
 	return
 }
 
+func newAbortableMsg(chatId int64, text string) tgbotapi2.MessageConfig {
+	return tgbotapi2.NewMessage(chatId, text+" /abort")
+}
+
+func isAbort(r reply) bool {
+	return r.msg != nil && r.msg.Text == "/abort"
+}
+
 func ipayHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, replyChan <-chan reply, allowedUsers map[int64]string, tasksChan chan<- task) {
 	logPrefix := "ipay handler: "
 
@@ -282,7 +296,7 @@ func ipayHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, replyChan <-ch
 	var r reply
 
 	// Ask for title
-	msgTitleDemand := tgbotapi2.NewMessage(chatId, "What did you pay for?")
+	msgTitleDemand := newAbortableMsg(chatId, "What did you pay for?")
 	bot.Send(msgTitleDemand)
 
 	//msg = tgbotapi2.NewMessage(chatId, "What did you pay for?")
@@ -291,6 +305,10 @@ func ipayHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, replyChan <-ch
 
 	// Parse title
 	r = <-replyChan
+	if isAbort(r) {
+		bot.Send(tgbotapi2.NewMessage(chatId, "Aborted."))
+		return
+	}
 	title := r.msg.Text
 	logD.Println("title: ", title)
 
@@ -315,14 +333,19 @@ func ipayHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, replyChan <-ch
 		return tgbotapi2.NewInlineKeyboardMarkup(userButtons...)
 	}
 
-	msgWho := tgbotapi2.NewMessage(chatId, fmt.Sprintf("Who did you pay for?"))
+	msgWho := newAbortableMsg(chatId, "Who did you pay for?")
 	msgWho.ReplyToMessageID = rplMsgId
 	msgWho.ReplyMarkup = composeUsersKb(map[string]bool{})
-	bot.Send(msgWho)
+	sent, _ := bot.Send(msgWho)
 
 	selected := make(map[string]bool)
 	var transTime time.Time
 	for r = range replyChan {
+		if isAbort(r) {
+			bot.Send(tgbotapi2.NewEditMessageText(chatId, sent.MessageID, "^C"))
+			bot.Send(tgbotapi2.NewMessage(chatId, "Aborted."))
+			return
+		}
 		if r.cb.Data == "⏎" {
 			log.Println(r.cb.Message.Date)
 			transTime = time.Unix(int64(r.cb.Message.Date), 0)
@@ -440,13 +463,18 @@ func igiveHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, replyChan <-c
 		return tgbotapi2.NewInlineKeyboardMarkup(userButtons...)
 	}
 
-	msgWho := tgbotapi2.NewMessage(chatId, fmt.Sprintf("Who did you give money back?"))
+	msgWho := newAbortableMsg(chatId, "Who did you give money back?")
 	msgWho.ReplyMarkup = composeUsersKb()
 	msgWho.ReplyToMessageID = rplMsgId
-	bot.Send(msgWho)
+	sent, _ := bot.Send(msgWho)
 
 	//selected := make(map[string]bool)
 	r := <-replyChan
+	if isAbort(r) {
+		bot.Send(tgbotapi2.NewEditMessageText(chatId, sent.MessageID, "^C"))
+		bot.Send(tgbotapi2.NewMessage(chatId, "Aborted."))
+		return
+	}
 
 	selected, err := strconv.Atoi(r.cb.Data)
 	if err != nil {
