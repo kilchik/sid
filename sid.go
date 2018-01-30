@@ -14,6 +14,8 @@ import (
 
 	"time"
 
+	"strings"
+
 	tgbotapi2 "github.com/go-telegram-bot-api/telegram-bot-api"
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -96,7 +98,7 @@ func main() {
 	if err != nil {
 		logE.Fatalf("create bot: %v", err)
 	}
-	//api.Debug = true
+	api.Debug = true
 	logI.Printf("authorized on account %s", api.Self.UserName)
 
 	u := tgbotapi2.NewUpdate(0)
@@ -149,20 +151,28 @@ func processUpdate(
 				case "ipay":
 					clientChan, ok := clients[update.Message.From.ID]
 					if !ok {
-						logE.Fatalf("no channel with user though started")
+						logE.Print("no channel with user though started")
 					}
 					go ipayHandler(&update, api, clientChan, allowedUsers, tasksChan)
 				case "igive":
 					clientChan, ok := clients[update.Message.From.ID]
 					if !ok {
-						logE.Fatalf("no channel with user though started")
+						logE.Print("no channel with user though started")
 					}
 					go igiveHandler(&update, api, clientChan, allowedUsers, tasksChan)
 				case "iowe":
 					go ioweHandler(&update, api)
 				default:
-					logI.Printf("unknown command: %q", update.Message.Text[1:])
-					handleNotAllowed(update, api)
+					if strings.HasPrefix(update.Message.Text[1:], "undo") {
+						clientChan, ok := clients[update.Message.From.ID]
+						if !ok {
+							logE.Print("no channel with user though started")
+						}
+						go undoHandler(&update, api, clientChan, tasksChan)
+					} else {
+						logI.Printf("unknown command: %q", update.Message.Text[1:])
+						handleNotAllowed(update, api)
+					}
 				}
 			} else {
 				// Got new text message
@@ -185,6 +195,48 @@ func handleNotAllowed(update tgbotapi2.Update, bot *tgbotapi2.BotAPI) {
 	msg := tgbotapi2.NewMessage(chatId, "Fuck off.")
 	msg.ReplyToMessageID = msgId
 	bot.Send(msg)
+}
+
+func undoHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, replyChan <-chan reply, tasksChan chan<- task) {
+	logPrefix := "handle undo: "
+
+	chatId := update.Message.Chat.ID
+	caller := update.Message.From.ID
+	undoCommand := "undo"
+	var trid int
+	var err error
+	if trid, err = strconv.Atoi(update.Message.Text[1+len(undoCommand):]); err != nil {
+		msg := tgbotapi2.NewMessage(chatId, "Invalid transaction index.")
+		bot.Send(msg)
+		return
+	}
+
+	undoSucceeded := make(chan bool)
+	go func(undoRes chan bool, trid int, ownerId int) {
+		succeeded := <-undoRes
+		msgText := fmt.Sprintf("Failed to undo transaction %d", trid)
+		if succeeded {
+			msgText = fmt.Sprintf("Transaction %d removed.", trid)
+		}
+		msg := tgbotapi2.NewMessage(chatId, msgText)
+		msg.ParseMode = "markdown"
+		bot.Send(msg)
+
+		var debt int
+		if err := calcDebt(ownerId, &debt); err != nil {
+			logE.Printf(logPrefix+"calculate debt: %v", err)
+			return
+		}
+		msgText = debtMessage(debt)
+		msg = tgbotapi2.NewMessage(chatId, msgText)
+		bot.Send(msg)
+	}(undoSucceeded, trid, caller)
+
+	tasksChan <- &undoTask{
+		trid:      trid,
+		ownerId:   caller,
+		succeeded: undoSucceeded,
+	}
 }
 
 func startHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI) {
@@ -337,9 +389,10 @@ func ipayHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, replyChan <-ch
 		trid := <-transIdx
 		msgText := fmt.Sprintf("Failed to create transaction for %q", title)
 		if trid != -1 {
-			msgText = fmt.Sprintf("tr #%d: %q", trid, title)
+			msgText = fmt.Sprintf("tr #%d: %q /undo%d", trid, title, trid)
 		}
 		msg := tgbotapi2.NewMessage(chatId, msgText)
+		msg.ParseMode = "markdown"
 		bot.Send(msg)
 
 		var debt int

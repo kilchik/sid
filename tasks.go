@@ -91,3 +91,42 @@ func (gt *giveTask) Exec() {
 
 	gt.succeeded <- true
 }
+
+type undoTask struct {
+	trid      int
+	ownerId   int
+	succeeded chan bool
+}
+
+func (ut *undoTask) Exec() {
+	log.Println(ut)
+	logPrefix := "exec undo task: "
+
+	stmt, err := db.Prepare(`DELETE FROM	operations WHERE transaction_id=?;`)
+	if err != nil {
+		logE.Printf(logPrefix+"prepare delete operations query: %v", err)
+		ut.succeeded <- false
+		return
+	}
+
+	if _, err := stmt.Exec(ut.trid); err != nil {
+		logE.Printf(logPrefix+"exec delete operations query: %v", err)
+		ut.succeeded <- false
+		return
+	}
+
+	stmt, err = db.Prepare(`DELETE FROM	transactions WHERE id=? AND owner_id=?;`)
+	if err != nil {
+		logE.Printf(logPrefix+"prepare delete transaction query: %v", err)
+		ut.succeeded <- false
+		return
+	}
+
+	if _, err := stmt.Exec(ut.trid, ut.ownerId); err != nil {
+		logE.Printf(logPrefix+"exec delete transaction query: %v", err)
+		ut.succeeded <- false
+		return
+	}
+
+	ut.succeeded <- true
+}
