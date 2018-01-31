@@ -13,7 +13,7 @@ type task interface {
 
 type payTask struct {
 	title    string
-	amount   int
+	amount   float64
 	ts       time.Time
 	owner    int
 	members  []int64
@@ -24,7 +24,7 @@ func (pt *payTask) Exec() {
 	log.Println(pt)
 	logPrefix := fmt.Sprintf("exec pay task %q: ", pt.title)
 
-	stmt, err := db.Prepare(`INSERT INTO transactions VALUES (NULL, ?, ?, ?);`)
+	stmt, err := db.Prepare(`INSERT INTO transactions (id, title, ts, owner_id) VALUES (NULL, ?, ?, ?);`)
 	if err != nil {
 		logE.Printf(logPrefix+"prepare insert new transaction query: %v", err)
 		pt.transIdx <- -1
@@ -45,7 +45,7 @@ func (pt *payTask) Exec() {
 		return
 	}
 
-	stmt, err = db.Prepare(`INSERT INTO operations VALUES (NULL, ?, ?, ?, ?);`)
+	stmt, err = db.Prepare(`INSERT INTO operations (id, src, dst, amount, transaction_id) VALUES (NULL, ?, ?, ?, ?);`)
 	if err != nil {
 		logE.Printf(logPrefix+"prepare insert operations query: %v", err)
 		pt.transIdx <- -1
@@ -54,7 +54,7 @@ func (pt *payTask) Exec() {
 	}
 
 	for _, m := range pt.members {
-		if execRes, err = stmt.Exec(pt.owner, m, pt.amount/len(pt.members), trid); err != nil {
+		if execRes, err = stmt.Exec(pt.owner, m, pt.amount/float64(len(pt.members)), trid); err != nil {
 			logE.Printf(logPrefix+"exec insert new transaction query: ", err)
 			pt.transIdx <- -1
 			// TODO: remove transaction
@@ -66,7 +66,7 @@ func (pt *payTask) Exec() {
 }
 
 type giveTask struct {
-	amount    int
+	amount    float64
 	src       int
 	dst       int
 	succeeded chan bool
@@ -76,7 +76,7 @@ func (gt *giveTask) Exec() {
 	log.Println(gt)
 	logPrefix := "exec give task: "
 
-	stmt, err := db.Prepare(`INSERT INTO operations VALUES (NULL, ?, ?, ?, NULL);`)
+	stmt, err := db.Prepare(`INSERT INTO operations (id, src, dst, amount, transaction_id) VALUES (NULL, ?, ?, ?, NULL);`)
 	if err != nil {
 		logE.Printf(logPrefix+"prepare insert operations query: %v", err)
 		gt.succeeded <- false

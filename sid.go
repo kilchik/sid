@@ -224,7 +224,7 @@ func undoHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, replyChan <-ch
 		msg.ParseMode = "markdown"
 		bot.Send(msg)
 
-		var debt int
+		var debt float64
 		if err := calcDebt(ownerId, &debt); err != nil {
 			logE.Printf(logPrefix+"calculate debt: %v", err)
 			return
@@ -251,7 +251,7 @@ func startHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI) {
 	bot.Send(msg)
 }
 
-func retrieveAmount(chatId int64, replyTo int, action string, bot *tgbotapi2.BotAPI, replyChan <-chan reply) (amount int, replyMsgId int) {
+func retrieveAmount(chatId int64, replyTo int, action string, bot *tgbotapi2.BotAPI, replyChan <-chan reply) (amount float64, replyMsgId int) {
 	// Ask for price
 	msg := newAbortableMsg(chatId, fmt.Sprintf("How much € did you %s?", action))
 	msg.ReplyToMessageID = replyTo
@@ -265,8 +265,9 @@ func retrieveAmount(chatId int64, replyTo int, action string, bot *tgbotapi2.Bot
 		amount = -1
 		return
 	}
-	amount, err := strconv.Atoi(r.msg.Text)
-	log.Printf("parsed: %d", amount)
+
+	amount, err := strconv.ParseFloat(r.msg.Text, 64)
+	log.Printf("parsed: %.2f", amount)
 	if err != nil {
 		logE.Printf("parse amount from msg %q: %v", r.msg.Text, err)
 		amount = -1
@@ -314,7 +315,7 @@ func ipayHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, replyChan <-ch
 
 	amount, rplMsgId := retrieveAmount(chatId, r.msg.MessageID, "pay", bot, replyChan)
 	if amount <= 0 {
-		logI.Printf(logPrefix+"entered amount: %d", amount)
+		logI.Printf(logPrefix+"entered amount: %.2f", amount)
 		return
 	}
 
@@ -387,7 +388,7 @@ func ipayHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, replyChan <-ch
 		membersStr += name
 	}
 
-	title = fmt.Sprintf("€%d for %s with %s", amount, title, membersStr)
+	title = fmt.Sprintf("€%.2f for %s with %s", amount, title, membersStr)
 	summary := "You paid " + title
 	alertUpdateAmount := tgbotapi2.NewCallbackWithAlert(r.cb.ID, summary)
 	alertUpdateAmount.ShowAlert = false
@@ -418,7 +419,7 @@ func ipayHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, replyChan <-ch
 		msg.ParseMode = "markdown"
 		bot.Send(msg)
 
-		var debt int
+		var debt float64
 		if err := calcDebt(ownerId, &debt); err != nil {
 			logE.Printf(logPrefix+"calculate debt: %v", err)
 			return
@@ -447,7 +448,7 @@ func igiveHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, replyChan <-c
 	chatId := update.Message.Chat.ID
 	amount, rplMsgId := retrieveAmount(chatId, update.Message.MessageID, "give back", bot, replyChan)
 	if amount <= 0 {
-		logI.Printf(logPrefix+"entered amount: %d", amount)
+		logI.Printf(logPrefix+"entered amount: %.2f", amount)
 		return
 	}
 
@@ -486,7 +487,7 @@ func igiveHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, replyChan <-c
 	bot.Send(msgEditSummary)
 
 	selectedName, _ := allowedUsers[int64(selected)]
-	msgSummary := tgbotapi2.NewMessage(chatId, fmt.Sprintf("You gave back €%d to %s", amount, selectedName))
+	msgSummary := tgbotapi2.NewMessage(chatId, fmt.Sprintf("You gave back €%.2f to %s", amount, selectedName))
 	bot.Send(msgSummary)
 
 	alertUpdateAmount := tgbotapi2.NewCallbackWithAlert(selectedName, selectedName)
@@ -503,7 +504,7 @@ func igiveHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, replyChan <-c
 			return
 		}
 
-		var debt int
+		var debt float64
 		if err := calcDebt(ownerId, &debt); err != nil {
 			logE.Printf(logPrefix+"calculate debt: %v", err)
 			return
@@ -521,13 +522,13 @@ func igiveHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, replyChan <-c
 	}
 }
 
-func debtMessage(debt int) string {
+func debtMessage(debt float64) string {
 	if debt == 0 {
 		return "You owe nothing"
 	} else if debt > 0 {
-		return fmt.Sprintf("You owe €%d", debt)
+		return fmt.Sprintf("You owe €%.2f", debt)
 	} else {
-		return fmt.Sprintf("You are owed €%d", -debt)
+		return fmt.Sprintf("You are owed €%.2f", -debt)
 	}
 }
 
@@ -537,7 +538,7 @@ func ioweHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI) {
 	requestorId := update.Message.From.ID
 	chatId := update.Message.Chat.ID
 
-	var debt int
+	var debt float64
 	if err := calcDebt(requestorId, &debt); err != nil {
 		logE.Printf(logPrefix+"calculate debt: %v", err)
 		return
@@ -550,7 +551,7 @@ func createTables() error {
 	return nil
 }
 
-func calcDebt(uid int, debt *int) error {
+func calcDebt(uid int, debt *float64) error {
 	logPrefix := "calculate debt: "
 	var rows *sql.Rows
 	rows, err := db.Query(`SELECT SUM(O.amount) FROM operations O
@@ -558,29 +559,30 @@ WHERE O.src=? AND O.dst!=?`, uid, uid)
 	if err != nil {
 		return fmt.Errorf(logPrefix+"select sum of payments: %v", err)
 	}
-	defer rows.Close()
-	var plus int
+	var plus float64
 	for rows.Next() {
 		err = rows.Scan(&plus)
 		if err != nil {
-			return fmt.Errorf(logPrefix+"scan plus: %v", err)
+			break
 		}
 	}
-	logD.Printf(logPrefix+"+%d", plus)
+	rows.Close()
+	logD.Printf(logPrefix+"+%.2f", plus)
 
 	rows, err = db.Query(`SELECT SUM(O.amount) FROM operations O
 WHERE O.dst=? AND O.src!=?`, uid, uid)
 	if err != nil {
 		return fmt.Errorf(logPrefix+"select sum of debts: %v", err)
 	}
-	var minus int
+	var minus float64
 	for rows.Next() {
 		err = rows.Scan(&minus)
 		if err != nil {
-			return fmt.Errorf(logPrefix+"scan minus: %v", err)
+			break
 		}
 	}
-	logD.Printf(logPrefix+"-%d", minus)
+	rows.Close()
+	logD.Printf(logPrefix+"-%.2f", minus)
 
 	*debt = minus - plus
 	return nil
