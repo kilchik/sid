@@ -16,6 +16,8 @@ import (
 
 	"strings"
 
+	"sort"
+
 	tgbotapi2 "github.com/go-telegram-bot-api/telegram-bot-api"
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -24,6 +26,7 @@ import (
 //ipay - create new transaction
 //iowe - find out how much you need to give back
 //igive - give back a debt
+//stat - display all balances
 
 var (
 	logD *log.Logger
@@ -117,12 +120,12 @@ func main() {
 
 	// Main loop of processing updates
 	for update := range updatesChan {
-		processUpdate(update, clients, api, allowedReverse, tasksChan)
+		processUpdate(update, clients, api, conf.params.Leader, allowedReverse, tasksChan)
 	}
 }
 
 func processUpdate(
-	update tgbotapi2.Update, clients map[int]chan reply, api *tgbotapi2.BotAPI, allowedUsers map[int64]string, tasksChan chan<- task,
+	update tgbotapi2.Update, clients map[int]chan reply, api *tgbotapi2.BotAPI, leaderUid int64, allowedUsers map[int64]string, tasksChan chan<- task,
 ) {
 	logPrefix := "process update: "
 	if update.CallbackQuery != nil {
@@ -142,34 +145,33 @@ func processUpdate(
 				// Got new command
 				switch update.Message.Text[1:] {
 				case "start":
-					if _, userChanExists := clients[update.Message.From.ID]; !userChanExists {
-						logD.Printf("add channel with user %d", update.Message.From.ID)
-						clientChan := make(chan reply)
-						clients[update.Message.From.ID] = clientChan
-					}
 					go startHandler(&update, api)
 				case "ipay":
-					clientChan, ok := clients[update.Message.From.ID]
-					if !ok {
-						logE.Print("no channel with user though started")
-					}
+					logD.Printf("add channel with user %d", update.Message.From.ID)
+					clientChan := make(chan reply, 10)
+					clients[update.Message.From.ID] = clientChan
+
 					go ipayHandler(&update, api, clientChan, allowedUsers, tasksChan)
 				case "igive":
-					clientChan, ok := clients[update.Message.From.ID]
-					if !ok {
-						logE.Print("no channel with user though started")
-					}
+					logD.Printf("add channel with user %d", update.Message.From.ID)
+					clientChan := make(chan reply, 10)
+					clients[update.Message.From.ID] = clientChan
+
 					go igiveHandler(&update, api, clientChan, allowedUsers, tasksChan)
 				case "iowe":
 					go ioweHandler(&update, api)
 				case "abort":
 					clients[update.Message.From.ID] <- reply{nil, update.Message}
+				case "reset":
+					go resetHandler(&update, api, leaderUid, tasksChan)
+				case "stat":
+					go statHandler(&update, allowedUsers, api)
 				default:
 					if strings.HasPrefix(update.Message.Text[1:], "undo") {
-						clientChan, ok := clients[update.Message.From.ID]
-						if !ok {
-							logE.Print("no channel with user though started")
-						}
+						logD.Printf("add channel with user %d", update.Message.From.ID)
+						clientChan := make(chan reply, 10)
+						clients[update.Message.From.ID] = clientChan
+
 						go undoHandler(&update, api, clientChan, tasksChan)
 					} else {
 						logI.Printf("unknown command: %q", update.Message.Text[1:])
@@ -197,6 +199,28 @@ func handleNotAllowed(update tgbotapi2.Update, bot *tgbotapi2.BotAPI) {
 	msg := tgbotapi2.NewMessage(chatId, "Fuck off.")
 	msg.ReplyToMessageID = msgId
 	bot.Send(msg)
+}
+
+func resetHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, leaderUid int64, tasksChan chan<- task) {
+	if update.Message.From.ID != int(leaderUid) {
+		return
+	}
+
+	resetSucceeded := make(chan bool)
+	go func(result chan bool) {
+		succeeded := <-result
+		msgText := "Failed to reset."
+		if succeeded {
+			msgText = "Done."
+		}
+		msg := tgbotapi2.NewMessage(update.Message.Chat.ID, msgText)
+		msg.ParseMode = "markdown"
+		bot.Send(msg)
+	}(resetSucceeded)
+
+	tasksChan <- &resetTask{
+		succeeded: resetSucceeded,
+	}
 }
 
 func undoHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, replyChan <-chan reply, tasksChan chan<- task) {
@@ -413,7 +437,7 @@ func ipayHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, replyChan <-ch
 		trid := <-transIdx
 		msgText := fmt.Sprintf("Failed to create transaction for %q", title)
 		if trid != -1 {
-			msgText = fmt.Sprintf("tr #%d: %q /undo%d", trid, title, trid)
+			msgText = fmt.Sprintf("*tr #%d: %q* /undo%d", trid, title, trid)
 		}
 		msg := tgbotapi2.NewMessage(chatId, msgText)
 		msg.ParseMode = "markdown"
@@ -490,10 +514,6 @@ func igiveHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, replyChan <-c
 	msgSummary := tgbotapi2.NewMessage(chatId, fmt.Sprintf("You gave back €%.2f to %s", amount, selectedName))
 	bot.Send(msgSummary)
 
-	alertUpdateAmount := tgbotapi2.NewCallbackWithAlert(selectedName, selectedName)
-	alertUpdateAmount.ShowAlert = false
-	bot.AnswerCallbackQuery(alertUpdateAmount)
-
 	succeeded := make(chan bool)
 	go func(succeeded chan bool, ownerId int) {
 		taskSucceeded := <-succeeded
@@ -544,6 +564,46 @@ func ioweHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI) {
 		return
 	}
 	msg := tgbotapi2.NewMessage(chatId, debtMessage(debt))
+	bot.Send(msg)
+}
+
+type debtor struct {
+	name string
+	debt float64
+}
+
+type maxDebtFirst []debtor
+
+func (a maxDebtFirst) Len() int           { return len(a) }
+func (a maxDebtFirst) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a maxDebtFirst) Less(i, j int) bool { return a[i].debt > a[j].debt }
+
+func statHandler(update *tgbotapi2.Update, users map[int64]string, bot *tgbotapi2.BotAPI) {
+	logPrefix := "stat handler: "
+
+	chatId := update.Message.Chat.ID
+	var debtors []debtor
+	for uid, name := range users {
+		var debt float64
+		if err := calcDebt(int(uid), &debt); err != nil {
+			logE.Printf(logPrefix+"calculate debt of %d: %v", uid, err)
+			return
+		}
+		debtors = append(debtors, debtor{name, debt})
+	}
+
+	sort.Sort(maxDebtFirst(debtors))
+
+	var debtsSummary string
+	for _, debtor := range debtors {
+		if len(debtsSummary) != 0 {
+			debtsSummary += "\n"
+		}
+		debtsSummary += fmt.Sprintf("`%-8s \t%-7.2f`", debtor.name, debtor.debt)
+	}
+
+	msg := tgbotapi2.NewMessage(chatId, debtsSummary)
+	msg.ParseMode = "markdown"
 	bot.Send(msg)
 }
 

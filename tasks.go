@@ -130,3 +130,40 @@ func (ut *undoTask) Exec() {
 
 	ut.succeeded <- true
 }
+
+type resetTask struct {
+	succeeded chan bool
+}
+
+func (rt *resetTask) Exec() {
+	log.Println("reset task")
+	logPrefix := "exec calc debt task: "
+
+	stmt, err := db.Prepare(`DELETE FROM operations;`)
+	if err != nil {
+		logE.Printf(logPrefix+"prepare truncate query: %v", err)
+		rt.succeeded <- false
+		return
+	}
+
+	if _, err := stmt.Exec(); err != nil {
+		logE.Printf(logPrefix+"exec truncate query: %v", err)
+		rt.succeeded <- false
+		return
+	}
+
+	stmt, err = db.Prepare(`DELETE FROM transactions;`)
+	if err != nil {
+		logE.Printf(logPrefix+"prepare truncate query: %v", err)
+		rt.succeeded <- false
+		return
+	}
+
+	if _, err := stmt.Exec(); err != nil {
+		logE.Printf(logPrefix+"exec truncate query: %v", err)
+		rt.succeeded <- false
+		return
+	}
+
+	rt.succeeded <- true
+}
