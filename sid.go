@@ -18,6 +18,10 @@ import (
 
 	"sort"
 
+	"encoding/csv"
+
+	"os/exec"
+
 	tgbotapi2 "github.com/go-telegram-bot-api/telegram-bot-api"
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -605,6 +609,109 @@ func statHandler(update *tgbotapi2.Update, users map[int64]string, bot *tgbotapi
 	msg := tgbotapi2.NewMessage(chatId, debtsSummary)
 	msg.ParseMode = "markdown"
 	bot.Send(msg)
+
+	expensesImage, err := createExpensesImage(int64(update.Message.From.ID), users)
+	if err != nil {
+		logE.Printf(logPrefix+"create expenses image: %v", err)
+		return
+	}
+	msgImg := tgbotapi2.NewPhotoUpload(chatId, expensesImage)
+	bot.Send(msgImg)
+}
+
+type userExpense struct {
+	title  string
+	amount float64
+	payer  string
+	time   time.Time
+}
+
+func selectExpensesFromDB(uid int64, users map[int64]string) (expenses []userExpense, err error) {
+	var rows *sql.Rows
+	rows, err = db.Query(`SELECT T.title, O.amount, O.src, T.ts
+FROM operations O, transactions T
+WHERE O.transaction_id=T.id AND O.dst=?
+ORDER BY T.ts ASC;`, uid)
+	if err != nil {
+		err = fmt.Errorf("select user expenses: %v", err)
+		return
+	}
+
+	defer rows.Close()
+	for rows.Next() {
+		var ue userExpense
+		var src int64
+		err = rows.Scan(&ue.title, &ue.amount, &src, &ue.time)
+		if err != nil {
+			return
+		}
+
+		var ok bool
+		if ue.payer, ok = users[src]; !ok {
+			err = fmt.Errorf("unknown user: %d", src)
+			return
+		}
+
+		expenses = append(expenses, ue)
+	}
+
+	return
+}
+
+func createExpensesImage(user int64, users map[int64]string) (imgPath string, err error) {
+	expenses, err := selectExpensesFromDB(user, users)
+	if err != nil {
+		err = fmt.Errorf("select all user expenses: %v", err)
+		return
+	}
+
+	// Create csv file
+	var records [][]string
+	records = append(records, []string{"Title", "Amount", "Payer", "Date"})
+	for _, e := range expenses {
+		var record []string
+		record = append(record, e.title)
+		record = append(record, fmt.Sprintf("€%.2f", e.amount))
+		record = append(record, e.payer)
+		record = append(record, e.time.Format("01/02/2006 15:04:05"))
+
+		records = append(records, record)
+	}
+
+	csvFilename := fmt.Sprintf("%s-%d.csv", users[user], int32(time.Now().Unix()))
+	csvFile, err := os.Create(csvFilename)
+	if err != nil {
+		err = fmt.Errorf("open csv file: %v", err)
+		return
+	}
+
+	csvWriter := csv.NewWriter(csvFile)
+	for _, record := range records {
+		if err = csvWriter.Write(record); err != nil {
+			err = fmt.Errorf("error writing record to csv: %v", err)
+			return
+		}
+	}
+	csvWriter.Flush()
+	csvFile.Close()
+	if err = csvWriter.Error(); err != nil {
+		return
+	}
+
+	// Call table renderer script to create the image
+	var output []byte
+	if output, err = exec.Command("./venv/bin/python", "table_renderer.py", csvFilename).CombinedOutput(); err != nil {
+		err = fmt.Errorf("calling table renderer script: %v; output: %s", err, string(output))
+		return
+	}
+
+	imgPath = csvFilename[:len(csvFilename)-3] + "png"
+	if _, err = os.Stat(imgPath); os.IsNotExist(err) {
+		err = fmt.Errorf("convert table into image: %v", err)
+		return
+	}
+
+	return
 }
 
 func createTables() error {
