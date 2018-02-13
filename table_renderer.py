@@ -37,7 +37,7 @@ def main():
                        align = ['left'] * 5))
 
         data = [trace]
-        py.image.save_as(data, filename="%s.png" % name, scale=2)
+        py.image.save_as(data, filename="%s.jpeg" % name, scale=3, height=2048)
 
     except Exception as e:
         write_error("caugth exception: %s" % e.message)

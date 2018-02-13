@@ -673,7 +673,7 @@ func createExpensesImage(user int64, users map[int64]string) (imgPath string, er
 		record = append(record, e.title)
 		record = append(record, fmt.Sprintf("€%.2f", e.amount))
 		record = append(record, e.payer)
-		record = append(record, e.time.Format("01/02/2006 15:04:05"))
+		record = append(record, e.time.Format("02/01/2006 15:04:05"))
 
 		records = append(records, record)
 	}
@@ -705,7 +705,7 @@ func createExpensesImage(user int64, users map[int64]string) (imgPath string, er
 		return
 	}
 
-	imgPath = csvFilename[:len(csvFilename)-3] + "png"
+	imgPath = csvFilename[:len(csvFilename)-3] + "jpeg"
 	if _, err = os.Stat(imgPath); os.IsNotExist(err) {
 		err = fmt.Errorf("convert table into image: %v", err)
 		return
