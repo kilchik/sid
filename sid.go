@@ -666,6 +666,7 @@ func createExpensesImage(user int64, users map[int64]string) (imgPath string, er
 	}
 
 	// Create csv file
+	var total float64
 	var records [][]string
 	records = append(records, []string{"Title", "Amount", "Payer", "Date"})
 	for _, e := range expenses {
@@ -675,8 +676,17 @@ func createExpensesImage(user int64, users map[int64]string) (imgPath string, er
 		record = append(record, e.payer)
 		record = append(record, e.time.Format("02/01/2006 15:04:05"))
 
+		total += e.amount
 		records = append(records, record)
 	}
+
+	var summary []string
+	summary = append(summary, "<b>Total</b>")
+	summary = append(summary, fmt.Sprintf("€<b>%.2f</b>", total))
+	summary = append(summary, "-")
+	summary = append(summary, "-")
+
+	records = append(records, summary)
 
 	csvFilename := fmt.Sprintf("%s-%d.csv", users[user], int32(time.Now().Unix()))
 	csvFile, err := os.Create(csvFilename)
