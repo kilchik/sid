@@ -24,6 +24,13 @@ func (pt *payTask) Exec() {
 	log.Println(pt)
 	logPrefix := fmt.Sprintf("exec pay task %q: ", pt.title)
 
+	trans, err := db.Begin()
+	if err != nil {
+		logE.Printf(logPrefix+"create new sqlite-transaction: %v", err)
+		pt.transIdx <- -1
+		return
+	}
+
 	stmt, err := db.Prepare(`INSERT INTO transactions (id, title, ts, owner_id) VALUES (NULL, ?, ?, ?);`)
 	if err != nil {
 		logE.Printf(logPrefix+"prepare insert new transaction query: %v", err)
@@ -49,7 +56,6 @@ func (pt *payTask) Exec() {
 	if err != nil {
 		logE.Printf(logPrefix+"prepare insert operations query: %v", err)
 		pt.transIdx <- -1
-		// TODO: remove transaction
 		return
 	}
 
@@ -57,9 +63,14 @@ func (pt *payTask) Exec() {
 		if execRes, err = stmt.Exec(pt.owner, m, pt.amount/float64(len(pt.members)), trid); err != nil {
 			logE.Printf(logPrefix+"exec insert new transaction query: ", err)
 			pt.transIdx <- -1
-			// TODO: remove transaction
 			return
 		}
+	}
+
+	if err := trans.Commit(); err != nil {
+		logE.Printf(logPrefix+"commit sqlite-transaction: %v", err)
+		pt.transIdx <- -1
+		return
 	}
 
 	pt.transIdx <- trid
@@ -76,6 +87,13 @@ func (gt *giveTask) Exec() {
 	log.Println(gt)
 	logPrefix := "exec give task: "
 
+	trans, err := db.Begin()
+	if err != nil {
+		logE.Printf(logPrefix+"create new sqlite-transaction: %v", err)
+		gt.succeeded <- false
+		return
+	}
+
 	stmt, err := db.Prepare(`INSERT INTO operations (id, src, dst, amount, transaction_id) VALUES (NULL, ?, ?, ?, NULL);`)
 	if err != nil {
 		logE.Printf(logPrefix+"prepare insert operations query: %v", err)
@@ -85,6 +103,12 @@ func (gt *giveTask) Exec() {
 
 	if _, err := stmt.Exec(gt.src, gt.dst, gt.amount); err != nil {
 		logE.Printf(logPrefix+"exec insert new transaction query: %v", err)
+		gt.succeeded <- false
+		return
+	}
+
+	if err := trans.Commit(); err != nil {
+		logE.Printf(logPrefix+"commit sqlite-transaction: %v", err)
 		gt.succeeded <- false
 		return
 	}
@@ -101,6 +125,13 @@ type undoTask struct {
 func (ut *undoTask) Exec() {
 	log.Println(ut)
 	logPrefix := "exec undo task: "
+
+	trans, err := db.Begin()
+	if err != nil {
+		logE.Printf(logPrefix+"create new sqlite-transaction: %v", err)
+		ut.succeeded <- false
+		return
+	}
 
 	stmt, err := db.Prepare(`DELETE FROM	operations WHERE transaction_id=?;`)
 	if err != nil {
@@ -128,6 +159,12 @@ func (ut *undoTask) Exec() {
 		return
 	}
 
+	if err := trans.Commit(); err != nil {
+		logE.Printf(logPrefix+"commit sqlite-transaction: %v", err)
+		ut.succeeded <- false
+		return
+	}
+
 	ut.succeeded <- true
 }
 
@@ -138,6 +175,13 @@ type resetTask struct {
 func (rt *resetTask) Exec() {
 	log.Println("reset task")
 	logPrefix := "exec calc debt task: "
+
+	trans, err := db.Begin()
+	if err != nil {
+		logE.Printf(logPrefix+"create new sqlite-transaction: %v", err)
+		rt.succeeded <- false
+		return
+	}
 
 	stmt, err := db.Prepare(`DELETE FROM operations;`)
 	if err != nil {
@@ -161,6 +205,12 @@ func (rt *resetTask) Exec() {
 
 	if _, err := stmt.Exec(); err != nil {
 		logE.Printf(logPrefix+"exec truncate query: %v", err)
+		rt.succeeded <- false
+		return
+	}
+
+	if err := trans.Commit(); err != nil {
+		logE.Printf(logPrefix+"commit sqlite-transaction: %v", err)
 		rt.succeeded <- false
 		return
 	}
