@@ -28,6 +28,12 @@ def main():
         py.sign_in("DemoAccount", "2qdyfjyr7o")
         df = pd.read_csv(csv_path)
 
+        table_height = 0
+        for row_id in range(df.size/4-1):
+            chars_num = len(str(df.iat[row_id,0]))
+            cell_height = 0.893 * chars_num + 33.465
+            table_height += cell_height
+
         trace = go.Table(
             header=dict(values=df.columns,
                         fill = dict(color='#C2D4FF'),
@@ -37,7 +43,7 @@ def main():
                        align = ['left'] * 5))
 
         data = [trace]
-        py.image.save_as(data, filename="%s.jpeg" % name, scale=3, height=2048)
+        py.image.save_as(data, filename="%s.png" % name, scale=3, height=table_height)
 
     except Exception as e:
         write_error("caugth exception: %s" % e.message)

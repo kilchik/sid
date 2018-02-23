@@ -715,7 +715,7 @@ func createExpensesImage(user int64, users map[int64]string) (imgPath string, er
 		return
 	}
 
-	imgPath = csvFilename[:len(csvFilename)-3] + "jpeg"
+	imgPath = csvFilename[:len(csvFilename)-3] + "png"
 	if _, err = os.Stat(imgPath); os.IsNotExist(err) {
 		err = fmt.Errorf("convert table into image: %v", err)
 		return

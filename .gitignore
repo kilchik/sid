@@ -1,0 +1,6 @@
+venv
+*.db
+*.conf
+.idea/
+.DS_Store
+
