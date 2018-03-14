@@ -116,6 +116,36 @@ func (jgt *joinGroupTask) Exec() {
 	jgt.err <- nil
 }
 
+type leaveGroupTask struct {
+	userId int
+	err    chan error
+}
+
+func (lgt *leaveGroupTask) Exec() {
+	trans, err := db.Begin()
+	if err != nil {
+		lgt.err <- fmt.Errorf("create new sqlite-transaction: %v", err)
+		return
+	}
+
+	stmt, err := db.Prepare(`DELETE FROM users WHERE id=?;`)
+	if err != nil {
+		lgt.err <- fmt.Errorf("prepare delete user query: %v", err)
+		return
+	}
+	log.Println("execing leavegroup")
+	if _, err = stmt.Exec(lgt.userId); err != nil {
+		lgt.err <- fmt.Errorf("exec delete user query: %v", err)
+		return
+	}
+
+	if err := trans.Commit(); err != nil {
+		lgt.err <- fmt.Errorf("commit sqlite-transaction: %v", err)
+		return
+	}
+	lgt.err <- nil
+}
+
 type payTask struct {
 	title    string
 	amount   float64

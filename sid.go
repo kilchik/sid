@@ -16,6 +16,8 @@ import (
 
 	"os/exec"
 
+	"strings"
+
 	tgbotapi2 "github.com/go-telegram-bot-api/telegram-bot-api"
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -25,6 +27,7 @@ import (
 //iowe - find out how much you need to give back
 //igive - give back a debt
 //stat - display all balances
+//leavegroup - leave current group
 
 var (
 	logD *log.Logger
@@ -127,6 +130,78 @@ func main() {
 	// Main loop of processing updates
 	for update := range updatesChan {
 		processUpdate(update, clients, api, conf.params.BotName, tasksChan)
+	}
+}
+
+func processUpdate(
+	update tgbotapi2.Update, clients map[int]chan reply, api *tgbotapi2.BotAPI, botName string, tasksChan chan<- task,
+) {
+	logPrefix := "process update: "
+	if update.CallbackQuery != nil {
+		// Got new callback
+		logD.Printf(logPrefix+"callback from user %d", update.CallbackQuery.From.ID)
+		clients[update.CallbackQuery.From.ID] <- reply{update.CallbackQuery, nil}
+	} else if update.Message != nil {
+		// Got new message
+		if len(update.Message.Text) > 0 {
+			if update.Message.Text[0] == '/' {
+				// Got new command
+				switch update.Message.Text[1:] {
+				case "start":
+					logD.Printf("add channel with user %d", update.Message.From.ID)
+					clientChan := make(chan reply, 10)
+					clients[update.Message.From.ID] = clientChan
+
+					go startHandler(&update, api, botName, clientChan, tasksChan)
+				case "leavegroup":
+					logD.Printf("add channel with user %d", update.Message.From.ID)
+					clientChan := make(chan reply, 10)
+					clients[update.Message.From.ID] = clientChan
+
+					go leaveGroupHandler(&update, api, botName, clientChan, tasksChan)
+
+				case "ipay":
+					logD.Printf("add channel with user %d", update.Message.From.ID)
+					clientChan := make(chan reply, 10)
+					clients[update.Message.From.ID] = clientChan
+
+					go ipayHandler(&update, api, clientChan, tasksChan)
+				case "igive":
+					logD.Printf("add channel with user %d", update.Message.From.ID)
+					clientChan := make(chan reply, 10)
+					clients[update.Message.From.ID] = clientChan
+
+					go igiveHandler(&update, api, clientChan, tasksChan)
+				case "iowe":
+					go ioweHandler(&update, api)
+				case "abort":
+					clients[update.Message.From.ID] <- reply{nil, update.Message}
+				case "reset":
+					go resetHandler(&update, api, tasksChan)
+				case "stat":
+					go statHandler(&update, api)
+				default:
+					if strings.HasPrefix(update.Message.Text[1:], "undo") {
+						logD.Printf("add channel with user %d", update.Message.From.ID)
+						clientChan := make(chan reply, 10)
+						clients[update.Message.From.ID] = clientChan
+
+						go undoHandler(&update, api, clientChan, tasksChan)
+					} else {
+						logI.Printf("unknown command: %q", update.Message.Text[1:])
+						handleNotAllowed(update, api)
+					}
+				}
+			} else {
+				// Got new text message
+				logD.Printf("got new message from %d", update.Message.From.ID)
+				clients[update.Message.From.ID] <- reply{nil, update.Message}
+			}
+		} else {
+			logD.Println("no text in message; skipping")
+		}
+	} else {
+		log.Printf("[%s] %s", update.Message.From.UserName, update.Message.Text)
 	}
 }
 

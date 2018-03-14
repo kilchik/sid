@@ -101,7 +101,7 @@ WHERE group_id=(SELECT group_id FROM users WHERE id=?);`, user)
 func getUserGroup(uid int) (g *group, err error) {
 	var rows *sql.Rows
 	rows, err = db.Query(`SELECT G.id, G.name FROM groups G, users U
-WHERE U.id=?`, uid)
+WHERE U.group_id=G.id AND U.id=?`, uid)
 	if err != nil {
 		err = fmt.Errorf("get user group: %v", err)
 		return

@@ -7,7 +7,6 @@ import (
 
 	"sort"
 	"strconv"
-	"strings"
 
 	tgbotapi2 "github.com/go-telegram-bot-api/telegram-bot-api"
 	"github.com/satori/go.uuid"
@@ -36,6 +35,12 @@ func startHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, botName strin
 		bot.Send(msg)
 		return
 	}
+
+	handleUserWithoutGroup(callerId, callerName, chatId, originalMsg, bot, botName, replyChan, tasksChan, logPrefix)
+}
+
+func handleUserWithoutGroup(callerId int, callerName string, chatId int64, originalMsg int, bot *tgbotapi2.BotAPI, botName string, replyChan <-chan reply, tasksChan chan<- task, logPrefix string) {
+	logPrefix += "handle user without group: "
 
 	// Ask user if he would like to join existing or create new one
 	const (
@@ -70,7 +75,7 @@ S:
 			if len(invite) != 0 {
 				errChan := make(chan error)
 				tasksChan <- &joinGroupTask{callerId, callerName, invite, errChan}
-				err = <-errChan
+				err := <-errChan
 				if err != nil {
 					logE.Printf(logPrefix+"execute join-group task: %v", err)
 					return
@@ -102,10 +107,46 @@ S:
 		}
 		bot.Send(tgbotapi2.NewMessage(chatId, "Forward the message below to contacts you wish to invite to your group:"))
 		invitationMsg := tgbotapi2.NewMessage(chatId,
-			fmt.Sprintf("*This message is your invitation to %s's group %q (MBI-%s). Just forward it to* @%s.", callerName, groupName, invite.String(), botName))
-		invitationMsg.ParseMode = "markdown"
+			fmt.Sprintf("This message is your invitation to %s's group %q (MBI-%s). Just forward it to @%s.", callerName, groupName, invite.String(), botName))
 		bot.Send(invitationMsg)
 	}
+}
+
+func leaveGroupHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, botName string, replyChan <-chan reply, tasksChan chan<- task) {
+	logPrefix := "leavegroup handler"
+
+	callerId := update.Message.From.ID
+	callerName := username(update.Message.From)
+	chatId := update.Message.Chat.ID
+
+	// Ask for confirmation
+	confirmRequest := newAbortableMsg(chatId, `Are you sure you want to leave the group? Type "yes"`)
+	bot.Send(confirmRequest)
+
+	// Parse answer
+	r := <-replyChan
+	if isAbort(r) {
+		bot.Send(tgbotapi2.NewMessage(chatId, "Aborted."))
+		return
+	}
+	if r.msg == nil {
+		return
+	}
+	if r.msg.Text != "yes" {
+		return
+	}
+
+	// Put new task into queue
+	errChan := make(chan error)
+	tasksChan <- &leaveGroupTask{callerId, errChan}
+	err := <-errChan
+	if err != nil {
+		logE.Printf(logPrefix+"execute leave-group task: %v", err)
+		return
+	}
+	bot.Send(tgbotapi2.NewMessage(chatId, "You left the group."))
+
+	handleUserWithoutGroup(callerId, callerName, chatId, r.msg.MessageID, bot, botName, replyChan, tasksChan, logPrefix)
 }
 
 func resetHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, tasksChan chan<- task) {
@@ -481,71 +522,6 @@ func undoHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, replyChan <-ch
 		trid:      trid,
 		ownerId:   caller,
 		succeeded: undoSucceeded,
-	}
-}
-
-func processUpdate(
-	update tgbotapi2.Update, clients map[int]chan reply, api *tgbotapi2.BotAPI, botName string, tasksChan chan<- task,
-) {
-	logPrefix := "process update: "
-	if update.CallbackQuery != nil {
-		// Got new callback
-		logD.Printf(logPrefix+"callback from user %d", update.CallbackQuery.From.ID)
-		clients[update.CallbackQuery.From.ID] <- reply{update.CallbackQuery, nil}
-	} else if update.Message != nil {
-		// Got new message
-		if len(update.Message.Text) > 0 {
-			if update.Message.Text[0] == '/' {
-				// Got new command
-				switch update.Message.Text[1:] {
-				case "start":
-					logD.Printf("add channel with user %d", update.Message.From.ID)
-					clientChan := make(chan reply, 10)
-					clients[update.Message.From.ID] = clientChan
-
-					go startHandler(&update, api, botName, clientChan, tasksChan)
-				case "ipay":
-					logD.Printf("add channel with user %d", update.Message.From.ID)
-					clientChan := make(chan reply, 10)
-					clients[update.Message.From.ID] = clientChan
-
-					go ipayHandler(&update, api, clientChan, tasksChan)
-				case "igive":
-					logD.Printf("add channel with user %d", update.Message.From.ID)
-					clientChan := make(chan reply, 10)
-					clients[update.Message.From.ID] = clientChan
-
-					go igiveHandler(&update, api, clientChan, tasksChan)
-				case "iowe":
-					go ioweHandler(&update, api)
-				case "abort":
-					clients[update.Message.From.ID] <- reply{nil, update.Message}
-				case "reset":
-					go resetHandler(&update, api, tasksChan)
-				case "stat":
-					go statHandler(&update, api)
-				default:
-					if strings.HasPrefix(update.Message.Text[1:], "undo") {
-						logD.Printf("add channel with user %d", update.Message.From.ID)
-						clientChan := make(chan reply, 10)
-						clients[update.Message.From.ID] = clientChan
-
-						go undoHandler(&update, api, clientChan, tasksChan)
-					} else {
-						logI.Printf("unknown command: %q", update.Message.Text[1:])
-						handleNotAllowed(update, api)
-					}
-				}
-			} else {
-				// Got new text message
-				logD.Printf("got new message from %d", update.Message.From.ID)
-				clients[update.Message.From.ID] <- reply{nil, update.Message}
-			}
-		} else {
-			logD.Println("no text in message; skipping")
-		}
-	} else {
-		log.Printf("[%s] %s", update.Message.From.UserName, update.Message.Text)
 	}
 }
 
