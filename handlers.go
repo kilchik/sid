@@ -150,26 +150,28 @@ func leaveGroupHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, botName 
 }
 
 func resetHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, tasksChan chan<- task) {
-	// TODO: check that caller is group leader
-	//if update.Message.From.ID != int(leaderUid) {
-	//	return
-	//}
-
-	resetSucceeded := make(chan bool)
-	go func(result chan bool) {
-		succeeded := <-result
-		msgText := "Failed to reset."
-		if succeeded {
-			msgText = "Done."
-		}
-		msg := tgbotapi2.NewMessage(update.Message.Chat.ID, msgText)
-		msg.ParseMode = "markdown"
-		bot.Send(msg)
-	}(resetSucceeded)
-
+	logPrefix := "reset handler: "
+	callerId := update.Message.From.ID
+	errChan := make(chan error)
 	tasksChan <- &resetTask{
-		succeeded: resetSucceeded,
+		callerId: callerId,
+		err:      errChan,
 	}
+	err := <-errChan
+	var msgText string
+	if err != nil {
+		if _, ok := err.(*errorNotAllowed); ok {
+			logI.Println(logPrefix + "not allowed")
+			msgText = "You are not allowed to reset. Ask your group leader."
+		} else {
+			logE.Printf(logPrefix+"execute reset task: %v", err)
+			msgText = "Failed to reset."
+		}
+	} else {
+		msgText = "Done."
+	}
+	msg := tgbotapi2.NewMessage(update.Message.Chat.ID, msgText)
+	bot.Send(msg)
 }
 
 func ipayHandler(update *tgbotapi2.Update, bot *tgbotapi2.BotAPI, replyChan <-chan reply, tasksChan chan<- task) {

@@ -45,7 +45,7 @@ func (cgt *createGroupTask) Exec() {
 		return
 	}
 
-	if err := upsertUserGroup(cgt.leaderId, cgt.leaderName, int(groupId)); err != nil {
+	if err := upsertUserGroup(cgt.leaderId, cgt.leaderName, int(groupId), true); err != nil {
 		cgt.err <- fmt.Errorf("upsert user group: %v", err)
 		return
 	}
@@ -59,7 +59,7 @@ func (cgt *createGroupTask) Exec() {
 }
 
 // Updates user group if user exists or inserts new user otherwise
-func upsertUserGroup(userId int, userName string, groupId int) error {
+func upsertUserGroup(userId int, userName string, groupId int, isLeader bool) error {
 	stmt, err := db.Prepare(`UPDATE users SET name=?, group_id=? WHERE id=?;`)
 	if err != nil {
 		return fmt.Errorf("prepare update user group query: %v", err)
@@ -67,11 +67,11 @@ func upsertUserGroup(userId int, userName string, groupId int) error {
 	if _, err = stmt.Exec(userName, groupId, userId); err != nil {
 		return fmt.Errorf("exec update user group query: %v", err)
 	}
-	stmt, err = db.Prepare(`INSERT OR IGNORE INTO users (id, name, group_id) VALUES (?, ?, ?);`)
+	stmt, err = db.Prepare(`INSERT OR IGNORE INTO users (id, name, group_id, is_leader) VALUES (?, ?, ?, ?);`)
 	if err != nil {
 		return fmt.Errorf("prepare insert user query: %v", err)
 	}
-	if _, err = stmt.Exec(userId, userName, groupId); err != nil {
+	if _, err = stmt.Exec(userId, userName, groupId, isLeader); err != nil {
 		return fmt.Errorf("exec insert user query: %v", err)
 	}
 	return nil
@@ -105,7 +105,7 @@ func (jgt *joinGroupTask) Exec() {
 		return
 	}
 	rows.Close()
-	if err := upsertUserGroup(jgt.userId, jgt.userName, groupId); err != nil {
+	if err := upsertUserGroup(jgt.userId, jgt.userName, groupId, false); err != nil {
 		jgt.err <- fmt.Errorf("upsert user group: %v", err)
 		return
 	}
@@ -304,51 +304,65 @@ func (ut *undoTask) Exec() {
 }
 
 type resetTask struct {
-	succeeded chan bool
+	callerId int
+	err      chan error
 }
 
 func (rt *resetTask) Exec() {
-	log.Println("reset task")
-	logPrefix := "exec calc debt task: "
-
 	trans, err := db.Begin()
 	if err != nil {
-		logE.Printf(logPrefix+"create new sqlite-transaction: %v", err)
-		rt.succeeded <- false
+		rt.err <- fmt.Errorf("create new sqlite-transaction: %v", err)
+		return
+	}
+
+	rows, err := db.Query(`SELECT is_leader FROM users WHERE id=?`, rt.callerId)
+	if err != nil {
+		rt.err <- fmt.Errorf("select is_leader: %v", err)
+		return
+	}
+	if !rows.Next() {
+		rt.err <- fmt.Errorf("no user with id %d found", rt.callerId)
+		return
+	}
+
+	var isLeader bool
+	if err = rows.Scan(&isLeader); err != nil {
+		rt.err <- fmt.Errorf("scan is_leader: %v", err)
+		return
+	}
+	rows.Close()
+
+	if !isLeader {
+		rt.err <- &errorNotAllowed{}
 		return
 	}
 
 	stmt, err := db.Prepare(`DELETE FROM operations;`)
 	if err != nil {
-		logE.Printf(logPrefix+"prepare truncate query: %v", err)
-		rt.succeeded <- false
+		rt.err <- fmt.Errorf("prepare truncate query: %v", err)
 		return
 	}
 
 	if _, err := stmt.Exec(); err != nil {
-		logE.Printf(logPrefix+"exec truncate query: %v", err)
-		rt.succeeded <- false
+		rt.err <- fmt.Errorf("exec truncate query: %v", err)
 		return
 	}
 
 	stmt, err = db.Prepare(`DELETE FROM transactions;`)
 	if err != nil {
-		logE.Printf(logPrefix+"prepare truncate query: %v", err)
-		rt.succeeded <- false
+		rt.err <- fmt.Errorf("prepare truncate query: %v", err)
 		return
 	}
 
 	if _, err := stmt.Exec(); err != nil {
-		logE.Printf(logPrefix+"exec truncate query: %v", err)
-		rt.succeeded <- false
+		rt.err <- fmt.Errorf("exec truncate query: %v", err)
 		return
 	}
 
 	if err := trans.Commit(); err != nil {
-		logE.Printf(logPrefix+"commit sqlite-transaction: %v", err)
-		rt.succeeded <- false
+		rt.err <- fmt.Errorf("commit sqlite-transaction: %v", err)
 		return
 	}
 
-	rt.succeeded <- true
+	rt.err <- nil
 }
